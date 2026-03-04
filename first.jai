@@ -1,10 +1,15 @@
-#import "Basic";
-
 // CHIP-8 emulator
+main :: () {
+}
+
+// Memory map
+// 0x000-0x1FF - Chip 8 interpreter (contains font set in emu)
+// 0x050-0x0A0 - Used for the built in 4x5 pixel font set (0-F)
+// 0x200-0xFFF - Program ROM and work RAM
+
 opcode: u16;
 memory: [4096] u8;
 cpu_registers: [16] u8;
-program_counter: u16;
 index_register: u16;
 program_counter: u16;
 stack: Stack(u16, 16);
@@ -22,20 +27,32 @@ Stack :: struct($T: Type, $N: s64) {
 	ptr: s64; 
 }
 
+chip8_initialize :: () {
+	// Setup registers etc;
+}
+
+chip8_cycle :: () {
+	// Fetch opcode
+	// Decode opcode
+	// Execute opcode
+	// Update timers
+}
+
 push_to_stack :: (s: *Stack($T, $N), elt: T) {
 	assert(s.ptr < s.data.count);
-	if s.ptr >= 0 then s.data();
+	if s.ptr < 0 then return;
+	s.data[s.ptr] = elt;
+	s.ptr += 1;
 }
 
 peek_stack :: (s: *Stack($T, $N)) {
-	// TODO
+	return s.data[s.ptr];
 }
 
-pop_from_stack :: (s: *Stack($T, $N)) {
-	// TODO
+pop_from_stack :: (s: *Stack($T, $N)) -> T {
+	res := s.data[s.ptr];
+	s.ptr -= 1;
+	return res;
 }
 
-// Memory map
-// 0x000-0x1FF - Chip 8 interpreter (contains font set in emu)
-// 0x050-0x0A0 - Used for the built in 4x5 pixel font set (0-F)
-// 0x200-0xFFF - Program ROM and work RAM
+#import "Basic";
