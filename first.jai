@@ -31,7 +31,7 @@ main :: () {
 
 		now := current_time_monotonic();
 		if now - last_cycle_time >= TARGET_CYCLE_TIME {
-			chip8_cycle(
+			quit = quit || !chip8_cycle(
 				to_float64_seconds(now - last_cycle_time),  // Delta Time
 				to_float64_seconds(now - start_time),       // Program time
 			);
@@ -72,17 +72,52 @@ chip8_initialize :: () {
 	
 	// Load font
 	memcpy(memory.data + 0x50, FONT.data, FONT.count);
+	program_counter += 0x55;
 }
 
-chip8_cycle :: (delta_time: float64, program_time: float64) {
+// If returns false, the loop should stop
+chip8_cycle :: (delta_time: float64, program_time: float64) -> bool {
 	redraw := false;
 	// print("% %\n", delta_time, program_time);
-	// --- Fetch opcode
-	//opcode = memory[program_counter] << 8 | memory[program_counter + 1];
+	// --- Fetch
+	opcode_bytes: [] u8;
+	opcode_bytes.data = memory.data + program_counter;
+	opcode_bytes.count = 2;
+	opcode = (cast(*u16) opcode_bytes.data).*;
+	if TARGET_IS_LITTLE_ENDIAN then opcode = byte_swap(opcode);
+	program_counter += 2;
 
-	// --- Decode opcode
+	// --- Decode
+	instruction_type : INSTRUCTION_TYPES = opcode_bytes[0] >> 4;
+	instruction_data := opcode & 0x0FFF; 
 
 	// --- Execute opcode
+	// https://johnearnest.github.io/Octo/docs/chip8ref.pdf
+	if instruction_type {
+		case .SYSTEM;
+			if opcode {
+				case 0x00e0; // clear
+				case 0x00ee; // exit subroutine
+			}
+
+		case .JUMP; 
+			program_counter = instruction_data;
+		case .CALL; 
+			// Call subroutine at instruction_data
+		case .IF_NEQ; 
+		case .IF_EQ; 
+		case .IF_EQ_REGISTER; 
+		case .IF_NEQ_REGISTER; 
+		case .ASSIGN; 
+		case .ADD; 
+		case .REGISTER_MATH; 
+		case .JUMP0; 
+		case .RANDOM; 
+		case .SPRITE; 
+		case .IF_KEY_PRESSED; 
+		case .ASSIGN_SPECIAL; 
+	}
+	
 	
 	// --- Update timers
 	
@@ -109,6 +144,7 @@ chip8_cycle :: (delta_time: float64, program_time: float64) {
 		Simp.swap_buffers(the_window);
 		redraw = false;
 	}
+	return true;
 }
 
 draw_pixel :: (x: int, y: int) {
@@ -182,6 +218,14 @@ panic :: (err: string) {
 	debug_break();
 }
 
+hex :: (n: $T) -> string {
+	return tprint("%", FormatInt.{value=n, base=16});
+}
+
+bin :: (n: $T) -> string {
+	return tprint("%", FormatInt.{value=n, base=2});
+}
+
 KEYCODE_TO_CHIP8_KEY :: #run -> Table(u16, u8) {
 	t : Table(u16, u8);
 
@@ -228,6 +272,24 @@ WINW :: DISPLAY_SCALE * 64;
 WINH :: DISPLAY_SCALE * 32;
 COLOR_ON :: Vector4.{0.69, 0.55, 0.66, 1.0};
 COLOR_OFF :: Vector4.{0.12, 0.12, 0.18, 1.0};
+TARGET_IS_LITTLE_ENDIAN :: true;
+INSTRUCTION_TYPES :: enum u8 {
+	SYSTEM :: 0;
+	JUMP :: 1;
+	CALL :: 2;
+	IF_NEQ :: 3;
+	IF_EQ :: 4;
+	IF_EQ_REGISTER :: 9;
+	IF_NEQ_REGISTER :: 5;
+	ASSIGN :: 6;
+	ADD :: 7;
+	REGISTER_MATH :: 8; // register F = 1 on some occasions
+	JUMP0 :: 0xB; // Jump to address + register 0 value
+	RANDOM :: 0xC;
+	SPRITE :: 0xD; // register F = 1 on collision
+	IF_KEY_PRESSED :: 0xE;
+	ASSIGN_SPECIAL :: 0xF; // Assign special registers like timers, index etc
+}
 
 #import "Basic";
 #import "Window_Creation";
