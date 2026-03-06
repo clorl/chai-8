@@ -6,6 +6,8 @@ main :: () {
 	the_window = create_window(window_name="Chip-8", width=WINW, height=WINH);
 	Simp.set_render_target(the_window);
 	Simp.set_shader_for_color();
+	clear_render_target();
+	Simp.swap_buffers(the_window);
 
 	chip8_initialize();
 
@@ -13,9 +15,19 @@ main :: () {
 
 	while !quit {
 		Input.update_window_events();
+		memset(*key_states, 0, size_of([16] u16));
 		for Input.events_this_frame {
 			if it.type == .QUIT then quit = true;
+
+			if it.type == {
+				case .KEYBOARD;
+					if it.key_pressed && table_contains(*KEYCODE_TO_CHIP8_KEY, cast(u16) it.key_code) {
+						success, idx := table_find(*KEYCODE_TO_CHIP8_KEY, cast(u16) it.key_code);
+						if success then key_states[idx] = true;
+					}
+			}
 		}
+		// print("%\n\n", key_states);
 
 		now := current_time_monotonic();
 		if now - last_cycle_time >= TARGET_CYCLE_TIME {
@@ -46,7 +58,7 @@ pixels: [64 * 32] bool;
 delay_timer: u8;
 sound_timer: u8; // When this one reaches 0 it beeps
 
-key_states: [16] u8;
+key_states: [16] bool;
 
 Stack :: struct($T: Type, $N: u64) {
 	data: [N] T;
@@ -59,9 +71,7 @@ chip8_initialize :: () {
 	// Setup registers etc;
 	
 	// Load font
-	add_to_memory(0x00FE, 0);
 	memcpy(memory.data + 0x50, FONT.data, FONT.count);
-	print_memory(memory);
 }
 
 chip8_cycle :: (delta_time: float64, program_time: float64) {
@@ -106,74 +116,91 @@ draw_pixel :: (x: int, y: int) {
 	y0 := cast(float) y * DISPLAY_SCALE;
 	x1 := x0 + DISPLAY_SCALE;
 	y1 := y0 + DISPLAY_SCALE;
-	print("(%, %) (%, %)", x0, y0, x1, y1);
+	// print("(%, %) (%, %)", x0, y0, x1, y1);
 	Simp.immediate_quad(x0, y0, x1, y1, COLOR_ON);
 }
 
 clear_render_target :: () {
-	C :: COLOR_OFF;
-	Simp.clear_render_target(C.x, C.y, C.z, C.w);
+	using COLOR_OFF;
+	Simp.clear_render_target(x, y, z, w);
 }
 
-// u16_to_bytes :: (val: u16) -> u8, u8 {
-// 	return cast(u8)
-// }
-//
 add_to_memory :: inline (val: $T, index: u16) {
-	print("%", size_of(T));
-	memcpy(memory.data + index, *val, size_of(T) / 8);
+	// print("%", size_of(T));
+	val_copy := byte_swap(val);
+	view: [] u8;
+	view.data = cast(*u8) *val_copy;
+	view.count = size_of(T);
+	memcpy(memory.data + index, view.data, view.count);
 }
 
 print_memory :: (data: [] u8) {
-    // 1. Print the Column Header
-    // We pad the start to match the 5-character wide address column
-    print("       "); 
+    print("\n            "); 
     for 0..15 {
-        // formatInt(it, base=16) converts 10 -> "a"
-        print("_% ", formatInt(it, base=16, capital_letters=true));
+        print("0%", FormatInt.{value=it, base=16});
         if it < 15 print(" ");
     }
-    print("\n");
+    print("\n\n");
 
-    // 2. Iterate through memory
     for row: 0..(data.count/16)-1 {
         
-        // Format the address label (e.g., "0x0_")
-        // We use padding=5 to ensure "0x1_" and "0x100_" align
-        addr_str := tprint("0x%_", formatInt(row, base=16, capital_letters=true));
-        
-        // Left pad the address string to 5 characters
-        print("%  ", formatText("%", addr_str, padding=5));
+        addr_str := print("% (0x%)  ", FormatInt.{value=row, base=10, minimum_digits=3}, FormatInt.{value=row, base=16, minimum_digits=2});
 
         for col: 0..15 {
             byte_index := row * 16 + col;
             
             if byte_index < data.count {
                 b := data[byte_index];
-                // formatInt with minimum_digits=2 gives us the "02" effect
-                print("% ", formatInt(b, base=16, minimum_digits=2, capital_letters=true));
+                print("% ", FormatInt.{value=b, base=16, minimum_digits=2});
             }
         }
         print("\n");
     }
 }
 
-push_to_stack :: (s: *Stack($T, $N), elt: T) {
-	assert(s.ptr < s.data.count);
-	if s.ptr < 0 then return;
-	s.data[s.ptr] = elt;
-	s.ptr += 1;
+peek :: (s: *Stack($T, $N)) -> T {
+	return ifx s.ptr > 0 then s.data[s.ptr-1] else 0;
 }
 
-peek_stack :: (s: *Stack($T, $N)) {
-	return s.data[s.ptr];
-}
-
-pop_from_stack :: (s: *Stack($T, $N)) -> T {
+pop :: (s: *Stack($T, $N)) -> T {
 	res := s.data[s.ptr];
 	s.ptr -= 1;
 	return res;
 }
+
+push :: (s: *Stack($T, $N), val: T) {
+	if s.ptr == s.data.count - 1 {
+		panic("Stack overflow");
+		return;
+	}
+	s.data[s.ptr] = val;
+	s.ptr += 1;
+}
+
+panic :: (err: string) {
+	print("Panic: %s\n", err, to_standard_error = true);
+	debug_break();
+}
+
+KEYCODE_TO_CHIP8_KEY :: #run -> Table(u16, u8) {
+	t : Table(u16, u8);
+
+	table_set(*t,64,0);      // A
+	table_set(*t,90,1);      // Z
+	table_set(*t,69,2);      // E
+	table_set(*t,82,3);      // R
+
+	table_set(*t, 81, 4);      // Q
+	table_set(*t, 83, 5);      // S
+	table_set(*t, 68, 6);      // D
+	table_set(*t, 70, 7);      // F
+
+	table_set(*t, 87, 8);      // W
+	table_set(*t, 88, 9);      // X
+	table_set(*t, 67, 10);     // C
+	table_set(*t, 86, 11);     // V
+	return t;
+};
 
 FONT :: u8.[
 	0xF0, 0x90, 0x90, 0x90, 0xF0, // 0
@@ -209,3 +236,5 @@ Simp :: #import "Simp";
 Random :: #import "Random";
 Math :: #import "Math";
 Vector4 :: Math.Vector4;
+#import "Bit_Operations";
+#import "Hash_Table";
