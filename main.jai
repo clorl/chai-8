@@ -1,3 +1,5 @@
+PROGRAM_PATH :: "roms/8-scrolling.ch8";
+
 // CHIP-8 emulator
 main :: () {
 	{
@@ -64,7 +66,9 @@ main :: () {
 }
 
 // Memory map
-// 0x000-0x1FF - Chip 8 interpreter (contains font set in emu)
+// 0x000-0x0FF - Call stack
+// 0x100       - Stack pointer
+// 0x101-0x1FF - Chip 8 interpreter (contains font set in emu)
 // 0x050-0x0A0 - Used for the built in 4x5 pixel font set (0-F)
 // 0x200-0xFFF - Program ROM and work RAM
 
@@ -73,6 +77,8 @@ registers: [16] u8;
 index_register: u16;
 program_counter: u16;
 pixels: Bit_Array; // 1 bit per pixel
+stack_memory: [16] u16;
+stack: [] u16 = ---;
 // stack: Stack(u16, 16);
 
 // Both timers count down at 60Hz
@@ -103,12 +109,13 @@ INSTRUCTIONS :: enum u16 {
 	JUMP0              :: 0xB__000; // Jump to address + register 0 value
 	RANDOM             :: 0xC__000;
 	DRAW               :: 0xD__000; // register F = 1 on collision
-	IF_KEY_PRESSED     :: 0xE__000;
+	IF_KEY             :: 0xE__000;
 	ASSIGN_SPECIAL     :: 0xF__000; // Assign special registers like timers, index etc
 }
 
 chip8_initialize :: () {
-	// Init display array
+	stack.data = stack_memory.data;
+	stack.count = 0;
 
 	// Load font
 	// memcpy(memory.data + 0x50, FONT.data, FONT.count);
@@ -118,8 +125,6 @@ chip8_initialize :: () {
 	// Load test program
 	memcpy(*memory[0x200], PROGRAM.data, PROGRAM.count);
 	// memcpy(memory.data + 0x200, PROGRAM.data, PROGRAM.count);
-	print("pc=%\n", program_counter);
-
 	print("-------------------------------------------------------------------\n");
 	print("---------------------- CHIP-8 INITIALIZED -------------------------\n");
 	print("-------------------------------------------------------------------\n");
@@ -128,6 +133,7 @@ chip8_initialize :: () {
 }
 
 redraw := false;
+last_op := 0;
 // If returns false, the loop should stop
 chip8_cycle :: (delta_time: float64, program_time: float64) -> bool {
 	// --- Fetch
@@ -136,14 +142,16 @@ chip8_cycle :: (delta_time: float64, program_time: float64) -> bool {
 		return false;
 	}
 	opcode : u16 = (cast(u16) memory[program_counter]) << 8 | memory[program_counter + 1];
-	print("0x%    %    ", program_counter, opcode);
+	if last_op != opcode then print("0x%    %    ", program_counter, opcode);
 	program_counter += 2;
 
-	print_instruction :: (name: string, data: .. Any) {
+	print_instruction :: (name: string, data: .. Any) #expand {
+		if `last_op == `opcode then return;
 		print("%", right_pad(name, 15));
 		for data {
 			print("% ", it);
 		}
+		print("\n");
 	}
 
 	// --- Decode
@@ -155,19 +163,38 @@ chip8_cycle :: (delta_time: float64, program_time: float64) -> bool {
 				case 0x00e0; // clear
 					print_instruction("CLEAR");
 					clear_all_bits(*pixels);
-				case 0x00ee; // exit subroutine
+				case 0x00ee; // RETURN
+					location := pop(*stack);
+					program_counter = location;
 			}
 
 		case .JUMP; 
 			location := opcode & 0x0FFF;
-			print_instruction("JUMP", location);
 			program_counter = location;
+			print_instruction("JUMP", location);
 		case .CALL; 
+			location := opcode & 0x0FFF;
+			stack.count += 1;
+			stack[stack.count - 1] = program_counter;
+			program_counter = location;
+			print_instruction("CALL", location);
 			// 		// Call subroutine at instruction_data
-		case .IF_NEQ; 
+		case .IF_NEQ;
+			reg_num := (opcode & 0x0F00) >> 8;
+			value := (opcode & 0x00FF);
+			if registers[reg_num] == cast(u8) value then program_counter += 2;
 		case .IF_EQ; 
+			reg_num := (opcode & 0x0F00) >> 8;
+			value := (opcode & 0x00FF);
+			if registers[reg_num] != cast(u8) value then program_counter += 2;
 		case .IF_EQ_REGISTER; 
+			reg_x_num := (opcode & 0x0F00) >> 8;
+			reg_y_num := (opcode & 0x00F0) >> 4;
+			if registers[reg_x_num] != registers[reg_y_num] then program_counter += 2;
 		case .IF_NEQ_REGISTER; 
+			reg_x_num := (opcode & 0x0F00) >> 8;
+			reg_y_num := (opcode & 0x00F0) >> 4;
+			if registers[reg_x_num] == registers[reg_y_num] then program_counter += 2;
 		case .SET_INDEX_REGISTER;
 			value := opcode & 0x0FFF;
 			print_instruction("SET_INDEX_REG", value);
@@ -183,29 +210,57 @@ chip8_cycle :: (delta_time: float64, program_time: float64) -> bool {
 			print_instruction("INC_REGISTER", reg_num, value);
 			registers[reg_num] = registers[reg_num] + value;
 		case .REGISTER_MATH;
-			reg_x_idx := (opcode & 0x0F00) >> 8;
-			reg_y_idx := (opcode & 0x00F0) >> 4;
-			reg_x := *registers[reg_x_idx];
-			reg_y := registers[reg_y_idx];
+			reg_x_num := (opcode & 0x0F00) >> 8;
+			reg_y_num := (opcode & 0x00F0) >> 4;
+			reg_x := *registers[reg_x_num];
+			reg_y := registers[reg_y_num];
+			reg_f := *registers[0xF];
 			op := "";
-			print_instruction("REG_MATH", reg_x_idx, op, reg_y_idx, reg_y);
 			if opcode & 0x000F == {
 				case 0;
 					reg_x.* = reg_y;
 					op = ":=";
 				case 1;
+					reg_x.* |= reg_y;
+					op = "|=";
 				case 2;
+					reg_x.* &= reg_y;
+					op = "&=";
 				case 3;
+					reg_x.* ^= reg_y;
+					op = "^=";
 				case 4;
+					sum: u16 = reg_x.* + reg_y;
+					reg_f.* = cast(u8) ifx sum > 0x00FF then 1 else 0;
+					reg_x.* = cast(u8) (sum & 0x00FF);
+					op = "+=";
 				case 5;
+					reg_f.* = cast(u8) ifx reg_x.* > reg_y then 1 else 0;
+					reg_x.* -= reg_y;
+					op = "-=";
 				case 6;
+					reg_f.* = cast(u8) reg_x.* & 0x01;
+					reg_x.* >>= reg_y;
+					op = ">>=";
 				case 7;
-				case 0x000E;
+					reg_f.* = cast(u8) ifx reg_y > reg_x.* then 1 else 0;
+					reg_x.* = reg_y - reg_x.*;
+					op = "=-";
+				case 0xE;
+					reg_f.* = cast(u8) reg_x.* & 0b10000000;
+					reg_x.* <<= reg_y;
+					op = "<<=";
 			}
+			print_instruction("REG_MATH", reg_x_num, op, reg_y_num, reg_y);
 		case .JUMP0; 
 			program_counter = registers[0] + (opcode & 0x0FFF);
 			print_instruction("JUMP0", registers[0], opcode & 0x0FFF);
-		case .RANDOM; 
+		case .RANDOM;
+			reg_num := (opcode & 0x0F00) >> 8;
+			value := (opcode & 0x00FF);
+			res := xorshift() & value;
+			registers[reg_num] = cast(u8) res;
+			print_instruction("RAND", reg_num, value, res);
 		case .DRAW; 
 			redraw = true;
 			sprite_x := registers[(opcode & 0x0F00) >> 8];
@@ -223,37 +278,58 @@ chip8_cycle :: (delta_time: float64, program_time: float64) -> bool {
 					set_bit_to(*pixels, idx, pixels[idx] ^ sprite_bit);
 				}
 			}
-			// for j: 0..h-1 {
-			// 	sprite := memory[index_register + j];
-			// 	print("% ", FormatInt.{value=sprite, base=16, minimum_digits=2});
-			// }
-			// for j: 0..h-1 {
-			// 	y := sprite_y + j;
-			// 	sprite := memory[index_register + j];
-			// 	// if TARGET_IS_LITTLE_ENDIAN then sprite = byte_swap(sprite);
-			// 	for i: 0..7 {
-			// 		sprite_bit := ((sprite >> i) & 0b0000_0001) == 1;
-			// 		// print(ifx sprite_bit then "#" else "_");
-			// 		// print("%", FormatInt.{value=(cast(u8) sprite_bit), base=2});
-			// 		if !sprite_bit then continue i;
-			// 		x := sprite_x + i;
-			// 		idx := (y * 64) + x;
-			//
-			// 		if pixels[idx] {
-			// 			registers[0x0F] = 1;
-			// 		}
-			//
-			// 		set_bit_to(*pixels,idx, (pixels[idx] ^ sprite_bit));
-			// 		// print("x=% y=% idx=%\n", x, y, FormatInt.{value=idx, base=10});
-			// 	}
-			// 	print("\n");
-			// }
-		case .IF_KEY_PRESSED; 
-		case .ASSIGN_SPECIAL; 
+		case .IF_KEY; 
+			key_idx := registers[(opcode & 0x0F00) >> 8];
+			if opcode & 0x00FF == {
+				case 0x9E;
+					if key_states[key_idx] then program_counter += 2;
+				case 0xA1;
+					if !key_states[key_idx] then program_counter += 2;
+			}
+		case .ASSIGN_SPECIAL;
+			reg_num := (opcode & 0x0F00) >> 8;
+			if opcode & 0x00FF == {
+				case 0x0007;
+					registers[reg_num] = delay_timer;
+				case 0x000A;
+					key_pressed := false;
+					print("Waiting for key press...\n");
+					while !key_pressed {
+						for key_states {
+							if !it continue;
+							key_pressed = true;
+							registers[reg_num] = cast(u8) it_index;
+							break;
+						}
+					}
+					print("Key pressed: %\n", registers[reg_num]);
+				case 0x0015;
+					delay_timer = registers[reg_num];
+				case 0x0018;
+					sound_timer = registers[reg_num];
+				case 0x001E;
+					index_register += registers[reg_num];
+				case 0x0029;
+					index_register = 0x50 + (5 * registers[reg_num]);
+				case 0x0033;
+					val := registers[reg_num];
+					hundreds := val / 100;
+					tens := val / 10 - hundreds * 10;
+					ones := val - tens * 10 - hundreds * 100;
+					memory[index_register] = hundreds;
+					memory[index_register + 1] = tens;
+					memory[index_register + 2] = ones;
+				case 0x0055;
+					memcpy(*memory + index_register, *registers, reg_num);
+					// for i: 0..reg_num {
+					// 	memory[index_register + i] = registers[i];
+					// }
+				case 0x0065;
+					memcpy(*registers, *memory + index_register, reg_num);
+			}
 		case;
 	}
-
-	print("\n");
+	last_op = opcode;
 	//print_registers();
 
 	// --- Update timers
@@ -272,8 +348,6 @@ chip8_cycle :: (delta_time: float64, program_time: float64) -> bool {
 		clear_render_target();
 
 		for pixels {
-			print(ifx it then "#" else "_");
-			if it_index % 64 == 0 then print("\n");
 			if !it continue;
 			x := it_index % 64;
 			y := it_index / 64;
@@ -287,7 +361,21 @@ chip8_cycle :: (delta_time: float64, program_time: float64) -> bool {
 	return true;
 }
 
-draw_pixel :: (x: int, y: int) {
+compile_seed :: #run cast(u32) to_microseconds(current_time_consensus()) & (cast(s64) Math.pow(2,4));
+rng_state : u32 = 0;
+xorshift :: inline () -> u8 {
+	if rng_state == 0 {
+		rng_state = cast(u32) (to_microseconds(current_time_consensus()) ^ compile_seed);
+	}
+	x := rng_state;
+	x ^= x << 13;
+	x ^= x >> 17;
+	x ^= x << 5;
+	rng_state = x;
+	return cast(u8) (x & 0xFF);
+}
+
+draw_pixel :: inline (x: int, y: int) {
 	x0 := cast(float) x * DISPLAY_SCALE;
 	y0 := cast(float) y * DISPLAY_SCALE;
 	x1 := x0 + DISPLAY_SCALE;
@@ -296,7 +384,7 @@ draw_pixel :: (x: int, y: int) {
 	Simp.immediate_quad(x0, y0, x1, y1, COLOR_ON);
 }
 
-clear_render_target :: () {
+clear_render_target :: inline () {
 	using COLOR_OFF;
 	Simp.clear_render_target(x, y, z, w);
 }
@@ -331,31 +419,12 @@ print_memory :: (from := 0, to := 0xFF) {
 }
 
 print_pixels :: () {
-	print("\n");
-	for pixels {
-		print(ifx it then "█" else "_");
-		if it_index % 64 == 0 then print("\n");
-	}
-	print("\n");
-}
-
-peek :: (s: *Stack($T, $N)) -> T {
-	return ifx s.ptr > 0 then s.data[s.ptr-1] else 0;
-}
-
-pop :: (s: *Stack($T, $N)) -> T {
-	res := s.data[s.ptr];
-	s.ptr -= 1;
-	return res;
-}
-
-push :: (s: *Stack($T, $N), val: T) {
-	if s.ptr == s.data.count - 1 {
-		panic("Stack overflow");
-		return;
-	}
-	s.data[s.ptr] = val;
-	s.ptr += 1;
+	// print("\n");
+	// for pixels {
+	// 	print(ifx it then "█" else "_");
+	// 	if it_index % 64 == 0 then print("\n");
+	// }
+	// print("\n");
 }
 
 panic :: (err: string) {
@@ -401,6 +470,8 @@ KEYCODE_TO_CHIP8_KEY :: #run -> Table(u16, u8) {
 	return t;
 };
 
+// 
+
 FONT :: u8.[
 	0xF0, 0x90, 0x90, 0x90, 0xF0, // 0
 	0x20, 0x60, 0x20, 0x20, 0x70, // 1
@@ -431,7 +502,7 @@ TARGET_IS_LITTLE_ENDIAN :: true;
 HEADLESS :: false;
 
 PROGRAM :: #run -> string {
-	file, ok := File.read_entire_file("ibm.ch8");
+	file, ok := File.read_entire_file(PROGRAM_PATH);
 	return file;
 }
 
