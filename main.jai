@@ -1,5 +1,3 @@
-PROGRAM_PATH :: "roms/8-scrolling.ch8";
-
 // CHIP-8 emulator
 main :: () {
 	args := get_command_line_arguments();
@@ -549,13 +547,13 @@ HEADLESS :: false;
 
 #import "Basic";
 #import "Window_Creation";
+#import "Bit_Operations";
+#import "Hash_Table";
+#import "String";
+#import "Bit_Array";
 Input :: #import "Input";
 Simp :: #import "Simp";
 Random :: #import "Random";
 Math :: #import "Math";
 Vector4 :: Math.Vector4;
-#import "Bit_Operations";
-#import "Hash_Table";
 File :: #import "File";
-#import "String";
-#import "Bit_Array";
