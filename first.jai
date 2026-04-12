@@ -1,4 +1,4 @@
-
+#!/usr/bin/env jai
 build :: () {
     set_build_options_dc(.{do_output=false});
 

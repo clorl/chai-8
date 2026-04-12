@@ -2,6 +2,16 @@ PROGRAM_PATH :: "roms/8-scrolling.ch8";
 
 // CHIP-8 emulator
 main :: () {
+	args := get_command_line_arguments();
+	if args.count <= 1 {
+		print("Usage: program <rom_path>.ch8\n");
+		return;
+	}
+	if !load_rom(args[1]) {
+		print("Something went wrong (see logs above)\n");
+		return;
+	}
+
 	{
 		using *context.print_style.default_format_int;
 		base = 16;
@@ -35,7 +45,10 @@ main :: () {
 			Input.update_window_events();
 			//memset(*key_states, 0, size_of([16] u16));
 			for Input.events_this_frame {
-				if it.type == .QUIT then quit = true;
+				if it.type == .QUIT then {
+					quit = true;
+					return;
+				}
 
 				if it.type == {
 					case .KEYBOARD;
@@ -63,6 +76,22 @@ main :: () {
 			last_cycle_time = now;
 		}
 	}
+}
+
+// return value is success or not
+load_rom :: (path: string) -> bool {
+	file, ok := File.read_entire_file(path);
+	if !ok then {
+		print("Couldn't read file at %\n", path);
+		return false;
+	}
+	rom := cast([] u8) file;
+	if rom.count + 0x200 >= memory.count {
+		print("Couldn't load rom at %, it is too big to fit in memory (% bytes, max is % bytes)\n", path, rom.count * 8, (memory.count - 0x200) * 8);
+		return false;
+	}
+	memcpy(*memory[0x200], rom.data, rom.count);
+	return true;
 }
 
 // Memory map
@@ -118,18 +147,15 @@ chip8_initialize :: () {
 	stack.count = 0;
 
 	// Load font
-	// memcpy(memory.data + 0x50, FONT.data, FONT.count);
-	memcpy(*memory[0x50], PROGRAM.data, PROGRAM.count);
-	program_counter = 0x200;
+	memcpy(*memory[0x50], FONT.data, FONT.count);
 
 	// Load test program
-	memcpy(*memory[0x200], PROGRAM.data, PROGRAM.count);
-	// memcpy(memory.data + 0x200, PROGRAM.data, PROGRAM.count);
 	print("-------------------------------------------------------------------\n");
 	print("---------------------- CHIP-8 INITIALIZED -------------------------\n");
 	print("-------------------------------------------------------------------\n");
 	// print_memory((program_counter >> 4 - 1), (program_counter >> 4) + 1);
-	print_memory(0x20, 0x27);
+	// print_memory(0x20, 0x27);
+	program_counter = 0x200;
 }
 
 redraw := false;
@@ -166,6 +192,7 @@ chip8_cycle :: (delta_time: float64, program_time: float64) -> bool {
 				case 0x00ee; // RETURN
 					location := pop(*stack);
 					program_counter = location;
+					print_instruction("RETURN");
 			}
 
 		case .JUMP; 
@@ -178,23 +205,26 @@ chip8_cycle :: (delta_time: float64, program_time: float64) -> bool {
 			stack[stack.count - 1] = program_counter;
 			program_counter = location;
 			print_instruction("CALL", location);
-			// 		// Call subroutine at instruction_data
 		case .IF_NEQ;
 			reg_num := (opcode & 0x0F00) >> 8;
 			value := (opcode & 0x00FF);
 			if registers[reg_num] == cast(u8) value then program_counter += 2;
+			print_instruction("IF_NEQ", reg_num, registers[reg_num], value);
 		case .IF_EQ; 
 			reg_num := (opcode & 0x0F00) >> 8;
 			value := (opcode & 0x00FF);
 			if registers[reg_num] != cast(u8) value then program_counter += 2;
+			print_instruction("IF_EQ", reg_num, registers[reg_num], value);
 		case .IF_EQ_REGISTER; 
 			reg_x_num := (opcode & 0x0F00) >> 8;
 			reg_y_num := (opcode & 0x00F0) >> 4;
 			if registers[reg_x_num] != registers[reg_y_num] then program_counter += 2;
+			print_instruction("IF_EQ_REG", reg_x_num, reg_y_num);
 		case .IF_NEQ_REGISTER; 
 			reg_x_num := (opcode & 0x0F00) >> 8;
 			reg_y_num := (opcode & 0x00F0) >> 4;
 			if registers[reg_x_num] == registers[reg_y_num] then program_counter += 2;
+			print_instruction("IF_NEQ_REG", reg_x_num, reg_y_num);
 		case .SET_INDEX_REGISTER;
 			value := opcode & 0x0FFF;
 			print_instruction("SET_INDEX_REG", value);
@@ -231,24 +261,26 @@ chip8_cycle :: (delta_time: float64, program_time: float64) -> bool {
 					op = "^=";
 				case 4;
 					sum: u16 = reg_x.* + reg_y;
-					reg_f.* = cast(u8) ifx sum > 0x00FF then 1 else 0;
 					reg_x.* = cast(u8) (sum & 0x00FF);
+					reg_f.* = cast(u8) ifx sum > 0x00FF then 1 else 0;
 					op = "+=";
 				case 5;
-					reg_f.* = cast(u8) ifx reg_x.* > reg_y then 1 else 0;
-					reg_x.* -= reg_y;
+					vx := reg_x.*;
+					vy := reg_y;
+					reg_x.* = vx - vy;
+					reg_f.* = cast(u8) ifx vx > vy then 1 else 0;
 					op = "-=";
 				case 6;
-					reg_f.* = cast(u8) reg_x.* & 0x01;
-					reg_x.* >>= reg_y;
+					reg_f.* = cast(u8) (reg_x.* & 0x01);
+					reg_x.* >>= 1;
 					op = ">>=";
 				case 7;
-					reg_f.* = cast(u8) ifx reg_y > reg_x.* then 1 else 0;
 					reg_x.* = reg_y - reg_x.*;
+					reg_f.* = cast(u8) ifx reg_y > reg_x.* then 1 else 0;
 					op = "=-";
 				case 0xE;
-					reg_f.* = cast(u8) reg_x.* & 0b10000000;
-					reg_x.* <<= reg_y;
+					reg_f.* = cast(u8) (reg_x.* & 0b10000000) >> 7;
+					reg_x.* <<= 1;
 					op = "<<=";
 			}
 			print_instruction("REG_MATH", reg_x_num, op, reg_y_num, reg_y);
@@ -269,7 +301,7 @@ chip8_cycle :: (delta_time: float64, program_time: float64) -> bool {
 			print_instruction("DRAW", sprite_x, sprite_y, n_bytes, index_register);
 			for i: 0..(n_bytes-1) {
 				sprite := memory[index_register + i];
-				y := (sprite_y + n_bytes - i) % 32;
+				y := (sprite_y + i) % 32;
 				for j: 0..7 {
 					x := (sprite_x + j) % 64;
 					sprite_bit := ((sprite >> (7-j)) & 1) == 1;
@@ -283,15 +315,19 @@ chip8_cycle :: (delta_time: float64, program_time: float64) -> bool {
 			if opcode & 0x00FF == {
 				case 0x9E;
 					if key_states[key_idx] then program_counter += 2;
+					print_instruction("IF_KEY_UP", key_idx);
 				case 0xA1;
 					if !key_states[key_idx] then program_counter += 2;
+					print_instruction("IF_KEY_DOWN", key_idx);
 			}
 		case .ASSIGN_SPECIAL;
 			reg_num := (opcode & 0x0F00) >> 8;
 			if opcode & 0x00FF == {
 				case 0x0007;
 					registers[reg_num] = delay_timer;
+					print_instruction("SET_REG_TO_DELAY");
 				case 0x000A;
+					print_instruction("WAIT_FOR_KEY");
 					key_pressed := false;
 					print("Waiting for key press...\n");
 					while !key_pressed {
@@ -305,12 +341,16 @@ chip8_cycle :: (delta_time: float64, program_time: float64) -> bool {
 					print("Key pressed: %\n", registers[reg_num]);
 				case 0x0015;
 					delay_timer = registers[reg_num];
+					print_instruction("SET_DELAY");
 				case 0x0018;
 					sound_timer = registers[reg_num];
+					print_instruction("SET_BUZZER");
 				case 0x001E;
 					index_register += registers[reg_num];
+					print_instruction("INCR_INDEX");
 				case 0x0029;
 					index_register = 0x50 + (5 * registers[reg_num]);
+					print_instruction("INDEX_TO_CHAR");
 				case 0x0033;
 					val := registers[reg_num];
 					hundreds := val / 100;
@@ -319,15 +359,20 @@ chip8_cycle :: (delta_time: float64, program_time: float64) -> bool {
 					memory[index_register] = hundreds;
 					memory[index_register + 1] = tens;
 					memory[index_register + 2] = ones;
+					print_instruction("SAVE_BCM");
 				case 0x0055;
-					memcpy(*memory + index_register, *registers, reg_num);
-					// for i: 0..reg_num {
-					// 	memory[index_register + i] = registers[i];
-					// }
+					for i: 0..reg_num {
+						memory[index_register + i] = registers[i];
+					}
+					print_instruction("SAVE_MEM");
 				case 0x0065;
-					memcpy(*registers, *memory + index_register, reg_num);
+					for i: 0..reg_num {
+						registers[i] = memory[index_register + i];
+					}
+					print_instruction("LOAD_MEM");
 			}
 		case;
+			print("\n");
 	}
 	last_op = opcode;
 	//print_registers();
@@ -365,7 +410,7 @@ compile_seed :: #run cast(u32) to_microseconds(current_time_consensus()) & (cast
 rng_state : u32 = 0;
 xorshift :: inline () -> u8 {
 	if rng_state == 0 {
-		rng_state = cast(u32) (to_microseconds(current_time_consensus()) ^ compile_seed);
+		rng_state = cast(u32) (to_microseconds(current_time_consensus()) ^ compile_seed) & 0xFFFFFFFF;
 	}
 	x := rng_state;
 	x ^= x << 13;
@@ -377,7 +422,7 @@ xorshift :: inline () -> u8 {
 
 draw_pixel :: inline (x: int, y: int) {
 	x0 := cast(float) x * DISPLAY_SCALE;
-	y0 := cast(float) y * DISPLAY_SCALE;
+	y0 := cast(float) (31 - y) * DISPLAY_SCALE;
 	x1 := x0 + DISPLAY_SCALE;
 	y1 := y0 + DISPLAY_SCALE;
 	// print("(%, %) (%, %)", x0, y0, x1, y1);
@@ -493,7 +538,7 @@ FONT :: u8.[
 
 TARGET_FPS :: 60;
 TARGET_CYCLE_TIME :: #run to_apollo(1.0 / TARGET_FPS);
-DISPLAY_SCALE :: 8;
+DISPLAY_SCALE :: 16;
 WINW :: DISPLAY_SCALE * 64;
 WINH :: DISPLAY_SCALE * 32;
 COLOR_ON :: Vector4.{0.69, 0.55, 0.66, 1.0};
@@ -501,10 +546,6 @@ COLOR_OFF :: Vector4.{0.12, 0.12, 0.18, 1.0};
 TARGET_IS_LITTLE_ENDIAN :: true;
 HEADLESS :: false;
 
-PROGRAM :: #run -> string {
-	file, ok := File.read_entire_file(PROGRAM_PATH);
-	return file;
-}
 
 #import "Basic";
 #import "Window_Creation";
